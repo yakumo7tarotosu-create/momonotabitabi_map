@@ -102,6 +102,13 @@ button{cursor:pointer}
 .badge.done{background:var(--ink);color:var(--surface)}
 .badge.warn{background:transparent;border:1px solid var(--sign);color:var(--sign)}
 .empty{padding:18px 4px;color:var(--muted);font-size:14px}
+.swipe-hint{margin:0}
+.row{position:relative;overflow:hidden}
+.row .item{position:relative;z-index:1;background:var(--surface);touch-action:pan-y;-webkit-user-select:none;user-select:none;padding-inline:4px}
+.row-bg{position:absolute;inset:0 0 1px 0;display:flex;align-items:center;justify-content:flex-start;padding:0 18px;color:#fff;font-weight:700;font-size:14px;opacity:0}
+.row-bg.left{justify-content:flex-end}
+.pinmark{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);border:1px solid var(--accent);border-radius:5px;padding:0 5px;margin-right:6px;vertical-align:1px}
+.row-confirm{display:grid;gap:8px;padding:12px 4px;border-bottom:1px solid var(--line)}
 
 .menu{display:grid;gap:8px}
 .menu button{text-align:left;border:1px solid var(--line);background:var(--surface);border-radius:12px;padding:12px 14px;display:grid;gap:2px}
@@ -188,7 +195,7 @@ function byId(id){for(var i=0;i<pins.length;i++)if(pins[i].id===id)return pins[i
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function hasPos(p){return typeof p.lat==='number'&&typeof p.lng==='number'&&isFinite(p.lat)&&isFinite(p.lng)}
 function labelFromText(t){t=String(t||'').trim();if(/流行/.test(t))return'trend';if(/兆/.test(t))return'sign';if(/定番/.test(t))return'classic';return'none'}
-function newPin(o){return{id:uid(),name:o.name||'',address:o.address||'',label:o.label||'none',status:o.status||'want',quiet:o.quiet||'',memo:o.memo||'',lat:typeof o.lat==='number'?o.lat:null,lng:typeof o.lng==='number'?o.lng:null,check:!!o.check,created:Date.now()}}
+function newPin(o){return{id:uid(),name:o.name||'',address:o.address||'',label:o.label||'none',status:o.status||'want',quiet:o.quiet||'',memo:o.memo||'',lat:typeof o.lat==='number'?o.lat:null,lng:typeof o.lng==='number'?o.lng:null,check:!!o.check,pinned:!!o.pinned,pinnedAt:+o.pinnedAt||0,created:Date.now()}}
 
 /* ---------- 地図 ---------- */
 var map=L.map('map',{zoomControl:false,attributionControl:true}).setView([34.6937,135.5023],12);
@@ -385,27 +392,100 @@ function startMove(id){
 }
 
 /* ---------- 一覧 ---------- */
-function openList(){
+function listOrder(a,b){
+  var pa=a.pinned?1:0,pb=b.pinned?1:0;
+  if(pa!==pb)return pb-pa;
+  if(pa&&pb)return(b.pinnedAt||0)-(a.pinnedAt||0);
+  return(hasPos(a)?1:0)-(hasPos(b)?1:0)||b.created-a.created;
+}
+function openList(keepScroll){
+  var st=keepScroll?sBody.scrollTop:0;
   var lf=[{k:'all',t:'すべて'}].concat(LABEL_ORDER.map(function(k){return{k:k,t:LABELS[k].t,c:LABELS[k].c}}));
   var sf=[{k:'all',t:'すべて'},{k:'want',t:'行きたい'},{k:'done',t:'行った'}];
-  var shown=pins.filter(passes).slice().sort(function(a,b){return(hasPos(a)?1:0)-(hasPos(b)?1:0)||b.created-a.created});
+  var shown=pins.filter(passes).slice().sort(listOrder);
   var h='<div class="field"><span class="lbl">ラベル</span>'+segHtml('fl',lf,filter.label)+'</div>'+
         '<div class="field"><span class="lbl">状態</span>'+segHtml('fs',sf,filter.status)+'</div>';
   if(!pins.length)h+='<p class="empty">まだピンがありません。上の欄に住所か店名を入れて「追加」を押すと、ここに並びます。</p>';
   else if(!shown.length)h+='<p class="empty">この条件に合うお店はありません。</p>';
   else{
-    h+='<ul class="list">';
+    h+='<p class="note swipe-hint">右へ少し：ピン留め　右へ大きく：行った　左へ：削除</p><ul class="list">';
     shown.forEach(function(p){
       var l=LABELS[p.label]||LABELS.none;
-      h+='<li><button class="item" data-id="'+p.id+'"><span class="dot" style="--c:'+l.c+'"></span><span class="main"><span class="name">'+esc(p.name||'名前なし')+'</span><br><span class="addr">'+esc(p.address||'住所なし')+(p.quiet?'　空き：'+esc(p.quiet):'')+'</span></span>'+
+      h+='<li class="row" data-row="'+p.id+'"><div class="row-bg" aria-hidden="true"><span class="lab"></span></div>'+
+         '<button class="item" data-id="'+p.id+'"><span class="dot" style="--c:'+l.c+'"></span><span class="main"><span class="name">'+(p.pinned?'<span class="pinmark">固定</span>':'')+esc(p.name||'名前なし')+'</span><br><span class="addr">'+esc(p.address||'住所なし')+(p.quiet?'　空き：'+esc(p.quiet):'')+'</span></span>'+
          '<span class="badge'+(p.status==='done'?' done':'')+(hasPos(p)?'':' warn')+'">'+(hasPos(p)?STATUS[p.status]:'未配置')+'</span></button></li>';
     });
     h+='</ul>';
   }
   openSheet('一覧（'+shown.length+'件）',h);
+  if(st)sBody.scrollTop=st;
   sBody.querySelectorAll('[data-fl]').forEach(function(b){b.onclick=function(){filter.label=b.dataset.fl;renderMarkers();openList()}});
   sBody.querySelectorAll('[data-fs]').forEach(function(b){b.onclick=function(){filter.status=b.dataset.fs;renderMarkers();openList()}});
-  sBody.querySelectorAll('.item[data-id]').forEach(function(b){b.onclick=function(){var p=byId(b.dataset.id);if(hasPos(p))map.setView([p.lat,p.lng],Math.max(map.getZoom(),16));openEdit(p.id)}});
+  sBody.querySelectorAll('.row').forEach(attachSwipe);
+}
+
+/* ---------- 一覧のスライド操作 ---------- */
+function attachSwipe(row){
+  var id=row.dataset.row, item=row.querySelector('.item'), bg=row.querySelector('.row-bg'), lab=bg.querySelector('.lab');
+  var sx=0,sy=0,dx=0,dir=null,pid=null,swiped=false,stage=null;
+  function limits(){var w=item.offsetWidth||320;return{t1:64,t2:Math.max(150,w*0.5),tl:-64}}
+  function paint(){
+    var p=byId(id);if(!p)return;var L=limits();
+    bg.classList.toggle('left',dx<0);
+    if(dx>0){
+      if(dx>=L.t2){stage='done';bg.style.background='var(--classic)';lab.textContent=p.status==='done'?'行きたいに戻す':'行った'}
+      else{stage=dx>=L.t1?'pin':null;bg.style.background='var(--accent)';lab.textContent=p.pinned?'固定を外す':'ピン留め'}
+    }else if(dx<0){stage=dx<=L.tl?'del':null;bg.style.background='var(--danger)';lab.textContent='削除'}
+    else{stage=null;lab.textContent=''}
+    bg.style.opacity=stage?1:.55;
+  }
+  function settle(){item.style.transition='transform .18s ease';item.style.transform='translateX(0)';setTimeout(function(){bg.style.opacity=0},180)}
+  item.addEventListener('pointerdown',function(e){
+    if(e.pointerType==='mouse'&&e.button!==0)return;
+    sx=e.clientX;sy=e.clientY;dx=0;dir=null;pid=e.pointerId;swiped=false;stage=null;item.style.transition='none';
+  });
+  item.addEventListener('pointermove',function(e){
+    if(e.pointerId!==pid)return;
+    var x=e.clientX-sx,y=e.clientY-sy;
+    if(!dir){
+      if(Math.abs(x)>10&&Math.abs(x)>Math.abs(y)*1.2){dir='h';try{item.setPointerCapture(pid)}catch(err){}}
+      else if(Math.abs(y)>10){pid=null;return}
+      else return;
+    }
+    dx=x;item.style.transform='translateX('+dx+'px)';paint();
+  });
+  function end(e){
+    if(e.pointerId!==pid)return;pid=null;
+    if(dir!=='h')return;
+    swiped=true;var s=stage;settle();
+    if(s==='pin')swipePin(id);
+    else if(s==='done')swipeDone(id);
+    else if(s==='del')askDelete(row,id);
+  }
+  item.addEventListener('pointerup',end);
+  item.addEventListener('pointercancel',function(e){if(e.pointerId===pid){pid=null;if(dir==='h')settle()}});
+  item.addEventListener('click',function(e){
+    if(swiped){e.preventDefault();swiped=false;return}
+    var p=byId(id);if(!p)return;if(hasPos(p))map.setView([p.lat,p.lng],Math.max(map.getZoom(),16));openEdit(id);
+  });
+}
+function swipePin(id){
+  var p=byId(id);if(!p)return;
+  p.pinned=!p.pinned;p.pinnedAt=p.pinned?Date.now():0;persist();
+  setTimeout(function(){openList(true);toast(p.pinned?'ピン留めしました':'固定を外しました')},190);
+}
+function swipeDone(id){
+  var p=byId(id);if(!p)return;
+  p.status=p.status==='done'?'want':'done';persist();renderMarkers();
+  setTimeout(function(){openList(true);toast(p.status==='done'?'「行った」にしました':'「行きたい」に戻しました')},190);
+}
+function askDelete(row,id){
+  var p=byId(id);if(!p)return;
+  setTimeout(function(){
+    row.innerHTML='<div class="row-confirm"><span>「'+esc(p.name||'名前なし')+'」を削除しますか？</span><span class="inline"><button type="button" class="danger solid" data-yes>削除する</button><button type="button" class="ghost" data-no>やめる</button></span></div>';
+    row.querySelector('[data-yes]').onclick=function(){pins=pins.filter(function(x){return x.id!==id});persist();renderMarkers();openList(true);toast('削除しました')};
+    row.querySelector('[data-no]').onclick=function(){openList(true)};
+  },190);
 }
 document.getElementById('listBtn').onclick=openList;
 
