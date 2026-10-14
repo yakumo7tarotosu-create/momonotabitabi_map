@@ -12,7 +12,7 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" type="image/png" href="icon-192.png">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@700&display=swap&text=%E6%97%85%E3%80%85%E3%83%9E%E3%83%83%E3%83%97">
 <style>
 /* 地図を全面に敷き、上に検索カード・下にシートを重ねる片手操作のレイアウト */
@@ -39,8 +39,9 @@ button{cursor:pointer}
 [hidden]{display:none!important}
 
 #map{position:fixed;inset:0;background:var(--sunk)}
-.leaflet-container{font-family:var(--f-body)}
-.leaflet-control-attribution{font-size:10px}
+.maplibregl-map{font-family:var(--f-body)}
+.maplibregl-ctrl-attrib{font-size:10px}
+.maplibregl-ctrl-bottom-right{bottom:env(safe-area-inset-bottom,0px)}
 
 /* 上部：検索カード */
 .top{position:fixed;top:0;left:0;right:0;z-index:1000;padding:calc(env(safe-area-inset-top,0px) + 10px) 12px 0;pointer-events:none}
@@ -121,7 +122,7 @@ pre.fmt{background:var(--sunk);border-radius:10px;padding:10px;font-size:12px;ov
 .toast{position:fixed;left:50%;transform:translateX(-50%);top:calc(env(safe-area-inset-top,0px) + 120px);z-index:1200;background:var(--ink);color:var(--surface);border-radius:12px;padding:9px 14px;font-size:14px;box-shadow:var(--shadow);max-width:calc(100% - 32px)}
 
 /* ピン */
-.pin-wrap{background:none;border:0}
+.pin-wrap{background:none;border:0;width:26px;height:32px;cursor:pointer}
 .pin{width:26px;height:26px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:var(--c);border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35);display:grid;place-items:center}
 .pin i{width:8px;height:8px;border-radius:50%;background:#fff;display:block}
 .pin.done{background:#fff;border:3px solid var(--c)}
@@ -174,7 +175,7 @@ pre.fmt{background:var(--sunk);border-radius:10px;padding:10px;font-size:12px;ov
 <div class="toast" id="toast" hidden></div>
 <input type="file" id="fileIn" accept="application/json,.json" hidden>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
 <script>
 (function(){
 'use strict';
@@ -198,31 +199,62 @@ function labelFromText(t){t=String(t||'').trim();if(/流行/.test(t))return'tren
 function newPin(o){return{id:uid(),name:o.name||'',address:o.address||'',label:o.label||'none',status:o.status||'want',quiet:o.quiet||'',memo:o.memo||'',lat:typeof o.lat==='number'?o.lat:null,lng:typeof o.lng==='number'?o.lng:null,check:!!o.check,pinned:!!o.pinned,pinnedAt:+o.pinnedAt||0,doneAt:+o.doneAt||0,created:Date.now()}}
 
 /* ---------- 地図 ---------- */
-var map=L.map('map',{zoomControl:false,attributionControl:true}).setView([34.6937,135.5023],12);
-var tiles={
-  gsi:L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png',{maxZoom:19,maxNativeZoom:18,attribution:'<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a>'}),
-  osm:L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>'})
+var STYLES={
+  color:{t:'カラー',url:'https://tiles.openfreemap.org/styles/liberty'},
+  simple:{t:'シンプル',url:'https://tiles.openfreemap.org/styles/positron'},
+  gsi:{t:'地理院（淡色）',url:{version:8,sources:{gsi:{type:'raster',tiles:['https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png'],tileSize:256,maxzoom:18,attribution:'<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a>'}},layers:[{id:'gsi',type:'raster',source:'gsi'}]}}
 };
-var curTile=pref.tile==='osm'?'osm':'gsi';
-tiles[curTile].addTo(map);
-function setTile(k){if(k===curTile)return;map.removeLayer(tiles[curTile]);curTile=k;tiles[k].addTo(map);pref.tile=k;savePref()}
+var curStyle=STYLES[pref.style]?pref.style:'color';
+var gl=new maplibregl.Map({container:'map',style:STYLES[curStyle].url,center:[135.5023,34.6937],zoom:12,attributionControl:{compact:true},dragRotate:false,pitchWithRotate:false,maxPitch:0});
+gl.touchZoomRotate.disableRotation();
+/* 店・施設アイコン、山の記号、番地を消し、地名は日本語で表示する（駅は残す） */
+var HIDE_LAYERS=['poi','mountain_peak','aerodrome_label','housenumber'];
+var JA_NAME=['coalesce',['get','name:ja'],['get','name']];
+function tidyStyle(){
+  var st;try{st=gl.getStyle()}catch(e){return}
+  if(!st||!st.layers)return;
+  st.layers.forEach(function(ly){
+    if(ly.type!=='symbol')return;
+    var sl=ly['source-layer']||'';
+    try{
+      if(HIDE_LAYERS.indexOf(sl)>=0&&!/transit|rail|station/i.test(ly.id)){gl.setLayoutProperty(ly.id,'visibility','none');return}
+      var tf=ly.layout&&ly.layout['text-field'];
+      if(tf&&/name/.test(JSON.stringify(tf)))gl.setLayoutProperty(ly.id,'text-field',JA_NAME);
+    }catch(e){}
+  });
+}
+gl.on('style.load',tidyStyle);
+var mapErrShown=false;
+gl.on('error',function(){if(mapErrShown)return;mapErrShown=true;toast('地図の一部を読み込めませんでした。通信状態を確認してください')});
+function setTile(k){if(k===curStyle||!STYLES[k])return;curStyle=k;pref.style=k;savePref();gl.setStyle(STYLES[k].url)}
+/* 以前の書き方（[緯度,経度]）のまま使えるようにする薄い窓口 */
+var map={
+  setView:function(ll,z){gl.jumpTo({center:[ll[1],ll[0]],zoom:z})},
+  getZoom:function(){return gl.getZoom()},
+  fitBounds:function(pts,o){var b=new maplibregl.LngLatBounds();pts.forEach(function(q){b.extend([q[1],q[0]])});gl.fitBounds(b,{padding:60,maxZoom:(o&&o.maxZoom)||16,duration:0})},
+  getContainer:function(){return gl.getCanvasContainer()},
+  on:function(ev,fn){gl.on(ev,function(e){if(e.lngLat)e.latlng={lat:e.lngLat.lat,lng:e.lngLat.lng};fn(e)})}
+};
 
 var markers={}, selected=null;
 var filter={label:'all',status:'all'};
 function passes(p){return(filter.label==='all'||p.label===filter.label)&&(filter.status==='all'||p.status===filter.status)}
-function iconFor(p){
-  var l=LABELS[p.label]||LABELS.none;
-  return L.divIcon({className:'pin-wrap',html:'<div class="pin'+(p.status==='done'?' done':'')+(selected===p.id?' sel':'')+'" style="--c:'+l.c+'"><i></i></div>',iconSize:[26,26],iconAnchor:[13,31]});
+function pinEl(p){
+  var l=LABELS[p.label]||LABELS.none,w=document.createElement('div');
+  w.className='pin-wrap';w.title=p.name||p.address||'名前なし';w.setAttribute('role','button');w.setAttribute('aria-label',w.title);
+  w.innerHTML='<div class="pin'+(p.status==='done'?' done':'')+(selected===p.id?' sel':'')+'" style="--c:'+l.c+'"><i></i></div>';
+  return w;
 }
 function renderMarkers(){
-  Object.keys(markers).forEach(function(id){map.removeLayer(markers[id])});
+  Object.keys(markers).forEach(function(id){markers[id].remove()});
   markers={};
   pins.forEach(function(p){
     if(!hasPos(p)||!passes(p)||p.status==='done')return;
-    var m=L.marker([p.lat,p.lng],{icon:iconFor(p),title:p.name||p.address||'名前なし',keyboard:true});
-    m.on('click',function(){if(placing||moving)return;openEdit(p.id)});
-    m.on('dragend',function(){var ll=m.getLatLng();var q=byId(p.id);if(q){q.lat=ll.lat;q.lng=ll.lng;q.check=false;persist()}});
-    m.addTo(map);markers[p.id]=m;
+    var el=pinEl(p);
+    var m=new maplibregl.Marker({element:el,anchor:'bottom'}).setLngLat([p.lng,p.lat]).addTo(gl);
+    el.addEventListener('click',function(ev){ev.stopPropagation();if(placing||moving)return;openEdit(p.id)});
+    m.on('dragend',function(){var ll=m.getLngLat();var q=byId(p.id);if(q){q.lat=ll.lat;q.lng=ll.lng;q.check=false;persist()}});
+    markers[p.id]=m;
   });
   updateCount();
 }
@@ -388,8 +420,8 @@ map.on('click',function(e){
 });
 function startMove(id){
   onClose=null;closeSheet();moving=id;selected=id;renderMarkers();
-  var m=markers[id];if(!m){moving=null;return}m.dragging.enable();map.panTo(m.getLatLng());
-  showBanner('ピンを長押ししてドラッグできます','完了',function(){var mm=markers[id];if(mm&&mm.dragging)mm.dragging.disable();moving=null;hideBanner();openEdit(id)});
+  var m=markers[id];if(!m){moving=null;return}m.setDraggable(true);gl.panTo(m.getLngLat());
+  showBanner('ピンを長押ししてドラッグできます','完了',function(){var mm=markers[id];if(mm)mm.setDraggable(false);moving=null;hideBanner();openEdit(id)});
 }
 
 /* ---------- 一覧 ---------- */
@@ -576,7 +608,7 @@ function openMenu(){
   '<button id="mExp"><b>書き出し（バックアップ）</b><small>全ピンをファイルに保存。機種変更のときに使います</small></button>'+
   '<button id="mImpF"><b>ファイルから読み込み</b><small>書き出したファイルを戻す（同じピンは上書き）</small></button>'+
   '</div>'+
-  '<div class="field"><span class="lbl">地図の見た目</span>'+segHtml('tile',[{k:'gsi',t:'地理院（淡色）'},{k:'osm',t:'OpenStreetMap'}],curTile)+'</div>'+
+  '<div class="field"><span class="lbl">地図の見た目</span>'+segHtml('tile',Object.keys(STYLES).map(function(k){return{k:k,t:STYLES[k].t}}),curStyle)+'</div>'+
   '<p class="note">データはこのスマホのブラウザの中だけに保存されます。ときどき書き出しておくと安心です。</p>';
   openSheet('メニュー',h);
   document.getElementById('mImp').onclick=openImport;
@@ -593,8 +625,9 @@ document.getElementById('locBtn').onclick=function(){
   if(!navigator.geolocation){toast('この端末では現在地を使えません');return}
   navigator.geolocation.getCurrentPosition(function(pos){
     var ll=[pos.coords.latitude,pos.coords.longitude];
-    if(meMarker)map.removeLayer(meMarker);
-    meMarker=L.marker(ll,{icon:L.divIcon({className:'pin-wrap',html:'<div class="me"></div>',iconSize:[16,16],iconAnchor:[8,8]}),interactive:false}).addTo(map);
+    if(meMarker)meMarker.remove();
+    var me=document.createElement('div');me.className='me';
+    meMarker=new maplibregl.Marker({element:me}).setLngLat([ll[1],ll[0]]).addTo(gl);
     map.setView(ll,16);
   },function(){toast('現在地を取得できませんでした。位置情報の許可を確認してください')},{enableHighAccuracy:true,timeout:10000});
 };
